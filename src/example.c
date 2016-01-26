@@ -100,16 +100,16 @@ void tWriteProc(struct aeEventLoop* eventLoop, int fd, void* clientData, int mas
     char pageBuf[512] = {0};
     char contentBuf[256] = {0};
     client_data_t *c = (client_data_t *)clientData;
+    int doClose = !server.tcpkeepalive;
 
-    snprintf(contentBuf,
+    size_t data_size = snprintf(contentBuf,
         sizeof(contentBuf),
         "<html>Hello, <a href=\"https://github.com/pandyxu/enhanced-redis-event-lib\">enhanced-redis-event-lib</a> example.<br /><br />%s</html>",
         server.backgroundBuf);
 
-    snprintf(pageBuf, sizeof(pageBuf),
+    data_size = snprintf(pageBuf, sizeof(pageBuf),
         "HTTP/1.1 200 OK\r\nContent-Length: %ld\r\n\r\n%s",
-        strlen(contentBuf), contentBuf);
-    int data_size = strlen(pageBuf);
+        data_size, contentBuf);
 
     size_t available = sizeof(c->writeBuf)-c->writeBufPos;
     if (data_size > available)
@@ -145,14 +145,14 @@ void tWriteProc(struct aeEventLoop* eventLoop, int fd, void* clientData, int mas
             nwritten = 0;
         } else {
             ERRLOG("Error writing to client: %s", strerror(errno));
-            aeDeleteFileEvent(eventLoop, fd, AE_WRITABLE);
-            free_client(c);
-            return;
+	    doClose = 1;
         }
     }
 
-    aeDeleteFileEvent(eventLoop, fd, AE_WRITABLE);
-    free_client(c);
+    if (doClose) {
+      aeDeleteFileEvent(eventLoop, fd, AE_WRITABLE);
+      free_client(c);
+    }
 }
 
 void tReadProc(struct aeEventLoop* eventLoop, int fd, void* clientData, int mask) {
@@ -236,7 +236,7 @@ void tAcceptProc(struct aeEventLoop* eventLoop, int fd, void* clientData, int ma
         client_data_t* c = create_client(cfd);
         if (aeCreateFileEvent(eventLoop, cfd, AE_READABLE,
                               tReadProc, c) == AE_ERR) {
-            DBGLOG("aeCreateFileEvent error.", cip, cport);
+            DBGLOG("aeCreateFileEvent error. %s %d", cip, cport);
             free_client(c);
             return;
         }
@@ -283,8 +283,8 @@ void sighandler(int sig) {
 
 void initServer(void) {
     server.max_process_client = 1000;
-    server.tcp_backlog = 20;
-    server.tcpkeepalive = 0;
+    server.tcp_backlog = 128; //20;
+    server.tcpkeepalive = 16;
     server.hz = 10;
 }
 
@@ -318,13 +318,14 @@ int main(int argc, char** argv) {
     signal(SIGABRT, &sighandler);
     signal(SIGTERM, &sighandler);
     signal(SIGINT, &sighandler);
+    signal(SIGPIPE, SIG_IGN);
 
     initServer();
 
     aeEventLoop* eventLoop = aeCreateEventLoop(server.max_process_client + SHTTPSVR_EVENTLOOP_FDSET_INCR);
     server.el = eventLoop;
 
-    int listen_socket = anetTcpServer(NULL, 80, NULL, server.tcp_backlog);
+    int listen_socket = anetTcpServer(NULL, 8000, NULL, server.tcp_backlog);
     anetNonBlock(NULL, listen_socket);
 
     if (listen_socket > 0
